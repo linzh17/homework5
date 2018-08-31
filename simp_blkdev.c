@@ -23,6 +23,20 @@ static int major_num = 0;
 //unsigned char simp_blkdev_data[SIMP_BLKDEV_BYTES]; //第四章修改 第六章去除
 static struct radix_tree_root simp_blkdev_data;
 
+void free_diskmem(void)
+{
+        int i;
+        void *p;
+
+        for (i = 0; i < (SIMP_BLKDEV_BYTES + PAGE_SIZE - 1) >> PAGE_SHIFT;
+                i++) {
+                p = radix_tree_lookup(&simp_blkdev_data, i);
+                radix_tree_delete(&simp_blkdev_data, i);
+                /* free NULL is safe */
+                free_page((unsigned long)p);
+        }
+}//第六章增加
+
 int alloc_diskmem(void)
 {
         int ret;
@@ -52,19 +66,7 @@ err_alloc:
         return ret;
 } //第六章增加
 
-void free_diskmem(void)
-{
-        int i;
-        void *p;
 
-        for (i = 0; i < (SIMP_BLKDEV_BYTES + PAGE_SIZE - 1) >> PAGE_SHIFT;
-                i++) {
-                p = radix_tree_lookup(&simp_blkdev_data, i);
-                radix_tree_delete(&simp_blkdev_data, i);
-                /* free NULL is safe */
-                free_page((unsigned long)p);
-        }
-}//第六章增加
 
 static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio *bio)
 {
@@ -104,7 +106,7 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
 
                 switch (bio_data_dir(bio)) {
                         case READ:
-                        case READA:
+                        //case READA:
                                 memcpy(iovec_mem + count_done, dsk_mem, count_current);
                                 break;
                         case WRITE:
