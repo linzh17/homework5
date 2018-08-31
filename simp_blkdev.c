@@ -20,7 +20,7 @@ MODULE_DESCRIPTION("For test");
 static struct request_queue *simp_blkdev_queue;
 static struct gendisk *simp_blkdev_disk;
 static int major_num = 0;
-unsigned char simp_blkdev_data[SIMP_BLKDEV_BYTES]; //第四章修改 第六章去除
+//unsigned char simp_blkdev_data[SIMP_BLKDEV_BYTES]; //第四章修改 第六章去除
 static struct radix_tree_root simp_blkdev_data;
 
 int alloc_diskmem(void)
@@ -72,7 +72,7 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
         struct bvec_iter i;
        // void *dsk_mem;
         unsigned long long dsk_offset;
-        dsk_offset = bio->bi_iter.bi_sector * 512
+        dsk_offset = bio->bi_iter.bi_sector * 512;
 
        /* if ((bio->bi_iter.bi_sector << 9) + bio->bi_iter.bi_size > SIMP_BLKDEV_BYTES) {
                 printk(KERN_ERR SIMP_BLKDEV_DISKNAME
