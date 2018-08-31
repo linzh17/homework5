@@ -6,6 +6,7 @@
 #include<linux/genhd.h>
 #include<linux/blkdev.h>
 #include<linux/version.h>
+#include <linux/hdreg.h>
 
 MODULE_LICENSE ("Dual BSD/GPL");
 MODULE_AUTHOR("linzhihao");
