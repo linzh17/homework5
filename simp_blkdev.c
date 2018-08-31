@@ -104,7 +104,7 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
  *                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         blk_end_request_all(req, 1);
  *                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 break;
  *default:
- */* No default because rq_data_dir(req) is 1 bit */ /*
+ * No default because rq_data_dir(req) is 1 bit */ /*
                         break;
                 }
         }
