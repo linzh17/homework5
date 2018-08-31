@@ -14,6 +14,7 @@ MODULE_DESCRIPTION("For test");
 #define SIMP_BLKDEV_DEVICEMAJOR        COMPAQ_SMART2_MAJOR2
 #define SIMP_BLKDEV_DISKNAME        "simp_blkdev"
 #define SIMP_BLKDEV_BYTES        (16*1024*1024)
+#define SIMP_BLKDEV_MAXPARTITIONS      (64)
 
 static struct request_queue *simp_blkdev_queue;
 static struct gendisk *simp_blkdev_disk;
@@ -80,11 +81,11 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
  * {
  *         struct request *req;
  *                 while ((req = blk_fetch_request(q)) != NULL) {
- *                                 if (((blk_rq_pos(req) + blk_rq_cur_sectors(req))*512)
- *                                                         > SIMP_BLKDEV_BYTES) {
- *                                                                                 printk(KERN_ERR SIMP_BLKDEV_DISKNAME
- *                                                                                                                 ": bad request: block=%llu, count=%u\n",
- *                                                                                                                                                 (unsigned long long)blk_rq_pos(req),
+ *if (((blk_rq_pos(req) + blk_rq_cur_sectors(req))*512)
+ * > SIMP_BLKDEV_BYTES) {
+ *printk(KERN_ERR SIMP_BLKDEV_DISKNAME
+ *": bad request: block=%llu, count=%u\n",
+ *(unsigned long long)blk_rq_pos(req),
  *                                                                                                                                                                                 blk_rq_cur_sectors(req));
  *                                                                                                                                                                                                         blk_end_request_all(req, -EIO);
  *                                                                                                                                                                                                                                 continue;
@@ -102,8 +103,8 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
  *                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 bio_data(req->bio), blk_rq_cur_sectors(req)*512); 
  *                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         blk_end_request_all(req, 1);
  *                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 break;
- *                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 default:
- *                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         /* No default because rq_data_dir(req) is 1 bit */ /*
+ *default:
+ */* No default because rq_data_dir(req) is 1 bit */ /*
                         break;
                 }
         }
@@ -124,7 +125,7 @@ static int __init simp_blkdev_init(void)
                 goto err_alloc_queue;
         }
 		blk_queue_make_request(simp_blkdev_queue, simp_blkdev_make_request);
-        simp_blkdev_disk = alloc_disk(1);
+        simp_blkdev_disk = alloc_disk(SIMP_BLKDEV_MAXPARTITIONS); 
         if (!simp_blkdev_disk) {
                 ret = -ENOMEM;
                 goto err_alloc_disk;
