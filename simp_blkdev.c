@@ -19,7 +19,7 @@ MODULE_DESCRIPTION("For test");
 static struct request_queue *simp_blkdev_queue;
 static struct gendisk *simp_blkdev_disk;
 static int major_num = 0;
-unsigned char simp_blkdev_data[SIMP_BLKDEV_BYTES];
+unsigned char simp_blkdev_data[SIMP_BLKDEV_BYTES]; //第四章修改
 
 static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio *bio)
 {
@@ -77,6 +77,36 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
 
         return 0;
 }
+
+static int simp_blkdev_getgeo(struct block_device *bdev,
+                struct hd_geometry *geo)
+{
+        /*
+         * capacity        heads        sectors        cylinders
+         * 0~16M        1        1        0~32768
+         * 16M~512M        1        32        1024~32768
+         * 512M~16G        32        32        1024~32768
+         * 16G~...        255        63        2088~...
+         */
+        if (SIMP_BLKDEV_BYTES < 16 * 1024 * 1024) {
+                geo->heads = 1;
+                geo->sectors = 1;
+
+        } else if (SIMP_BLKDEV_BYTES < 512 * 1024 * 1024) {
+                geo->heads = 1;
+                geo->sectors = 32;
+        } else if (SIMP_BLKDEV_BYTES < 16ULL * 1024 * 1024 * 1024) {
+                geo->heads = 32;
+                geo->sectors = 32;
+        } else {
+                geo->heads = 255;
+                geo->sectors = 63;
+        }
+
+        geo->cylinders = SIMP_BLKDEV_BYTES>>9/geo->heads/geo->sectors;
+
+        return 0;
+}
 /*static void simp_blkdev_do_request(struct request_queue *q)
  * {
  *         struct request *req;
@@ -113,6 +143,7 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
 
 struct block_device_operations simp_blkdev_fops = {
         .owner                = THIS_MODULE,
+        .getgeo                = simp_blkdev_getgeo,
 };
 
 static int __init simp_blkdev_init(void)
