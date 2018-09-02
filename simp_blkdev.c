@@ -12,6 +12,12 @@ MODULE_LICENSE ("Dual BSD/GPL");
 MODULE_AUTHOR("linzhihao");
 MODULE_DESCRIPTION("For test");
 
+
+#define SIMP_BLKDEV_DATASEGORDER        (2)  // order=2 每次从伙伴系统中申请连续的4个页面
+#define SIMP_BLKDEV_DATASEGSHIFT        (PAGE_SHIFT + SIMP_BLKDEV_DATASEGORDER)  //偏移量和内存段之间相互转换时使用的移位值
+#define SIMP_BLKDEV_DATASEGSIZE                (PAGE_SIZE << SIMP_BLKDEV_DATASEGORDER) //字节为单位的内存段的长度 16384
+#define SIMP_BLKDEV_DATASEGMASK                (~(SIMP_BLKDEV_DATASEGSIZE-1)) //内存段的屏蔽位
+
 #define SIMP_BLKDEV_DEVICEMAJOR        COMPAQ_SMART2_MAJOR2
 #define SIMP_BLKDEV_DISKNAME        "simp_blkdev"
 #define SIMP_BLKDEV_BYTES        (16*1024*1024)
@@ -28,14 +34,14 @@ void free_diskmem(void)
         int i;
         void *p;
 
-        for (i = 0; i < (SIMP_BLKDEV_BYTES + PAGE_SIZE - 1) >> PAGE_SHIFT;
-                i++) {
+        for (i = 0; i < (SIMP_BLKDEV_BYTES + SIMP_BLKDEV_DATASEGSIZE - 1)
+                >> SIMP_BLKDEV_DATASEGSHIFT; i++) {
                 p = radix_tree_lookup(&simp_blkdev_data, i);
                 radix_tree_delete(&simp_blkdev_data, i);
                 /* free NULL is safe */
-                free_page((unsigned long)p);
+                free_pages((unsigned long)p, SIMP_BLKDEV_DATASEGORDER);
         }
-}//第六章增加
+}
 
 int alloc_diskmem(void)
 {
@@ -45,9 +51,10 @@ int alloc_diskmem(void)
 
         INIT_RADIX_TREE(&simp_blkdev_data, GFP_KERNEL);
 
-        for (i = 0; i < (SIMP_BLKDEV_BYTES + PAGE_SIZE - 1) >> PAGE_SHIFT;
-                i++) {
-                p = (void *)__get_free_page(GFP_KERNEL);
+        for (i = 0; i < (SIMP_BLKDEV_BYTES + SIMP_BLKDEV_DATASEGSIZE - 1)
+                >> SIMP_BLKDEV_DATASEGSHIFT; i++) {
+                p = (void *)__get_free_pages(GFP_KERNEL,
+                        SIMP_BLKDEV_DATASEGORDER);
                 if (!p) {
                         ret = -ENOMEM;
                         goto err_alloc;
@@ -60,13 +67,11 @@ int alloc_diskmem(void)
         return 0;
 
 err_radix_tree_insert:
-        free_page((unsigned long)p);
+        free_pages((unsigned long)p, SIMP_BLKDEV_DATASEGORDER);
 err_alloc:
         free_diskmem();
         return ret;
-} //第六章增加
-
-
+}
 
 static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio *bio)
 {
@@ -76,7 +81,7 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
         unsigned long long dsk_offset;
         dsk_offset = bio->bi_iter.bi_sector * 512;
 
-       /* if ((bio->bi_iter.bi_sector << 9) + bio->bi_iter.bi_size > SIMP_BLKDEV_BYTES) {
+       if ((bio->bi_iter.bi_sector << 9) + bio->bi_iter.bi_size > SIMP_BLKDEV_BYTES) {
                 printk(KERN_ERR SIMP_BLKDEV_DISKNAME
                         ": bad request: block=%llu, count=%u\n",
                         (unsigned long long)bio->bi_iter.bi_sector, bio->bi_iter.bi_size);
@@ -88,7 +93,7 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
                 return 0;
         } 
 
-        dsk_mem = simp_blkdev_data + (bio->bi_iter.bi_sector << 9); */
+        /*dsk_mem = simp_blkdev_data + (bio->bi_iter.bi_sector << 9); */
 
         bio_for_each_segment(bvec, bio, i) {
                 unsigned int count_done, count_current;
@@ -98,12 +103,26 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
                 iovec_mem = kmap(bvec.bv_page) + bvec.bv_offset;
 
                 count_done = 0;
-               while (count_done < bvec.bv_len) {
-                        count_current = min(bvec.bv_len - count_done, PAGE_SIZE - (dsk_offset + count_done) % PAGE_SIZE);
+                while (count_done < bvec.bv_len) {
+                        count_current = min(bvec.bv_len - count_done,
+                                (unsigned int)(SIMP_BLKDEV_DATASEGSIZE
+                                - ((dsk_offset + count_done) &
+                                ~SIMP_BLKDEV_DATASEGMASK)));
 
-                        dsk_mem = radix_tree_lookup(&simp_blkdev_data, (dsk_offset + count_done) / PAGE_SIZE);
-                        dsk_mem += (dsk_offset + count_done) % PAGE_SIZE;  
-
+                        dsk_mem = radix_tree_lookup(&simp_blkdev_data,
+                                (dsk_offset + count_done)
+                                >> SIMP_BLKDEV_DATASEGSHIFT);
+                        if (!dsk_mem) {
+                                printk(KERN_ERR SIMP_BLKDEV_DISKNAME
+                                        ": search memory failed: %llu\n",
+                                        (dsk_offset + count_done)
+                                        >> SIMP_BLKDEV_DATASEGSHIFT);
+                                kunmap(bvec.bv_page);
+                                bio_endio(bio);
+                                return 0;
+                        }
+                         dsk_mem += (dsk_offset + count_done)
+                                & ~SIMP_BLKDEV_DATASEGMASK;
                 switch (bio_data_dir(bio)) {
                         case READ:
                         //case READA:
@@ -112,6 +131,13 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
                         case WRITE:
                                 memcpy(dsk_mem, iovec_mem + count_done, count_current);
                                 break;
+                        default:
+                                printk(KERN_ERR SIMP_BLKDEV_DISKNAME
+                                        ": unknown value of bio_rw: %lu\n",
+                                        bio_data_dir(bio));
+                                kunmap(bvec.bv_page);
+                                bio_endio(bio);
+                                return 0;                                
                         }
                  count_done += count_current;
                 }
