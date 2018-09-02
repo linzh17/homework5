@@ -22,6 +22,11 @@ MODULE_DESCRIPTION("For test");
 #define SIMP_BLKDEV_DISKNAME        "simp_blkdev"
 //#define simp_blkdev_bytes        (16*1024*1024)
 #define SIMP_BLKDEV_MAXPARTITIONS      (64)
+
+#define SIMP_BLKDEV_SECTORSHIFT        (9)
+#define SIMP_BLKDEV_SECTORSIZE        (1ULL<<SIMP_BLKDEV_SECTORSHIFT)//左移9
+#define SIMP_BLKDEV_SECTORMASK        (~(SIMP_BLKDEV_SECTORSIZE-1))//~((1ULL<<9) - 1)
+
 static char *simp_blkdev_param_size = "16M"; //磁盘大小的默认值指定为16M
 module_param_named(size, simp_blkdev_param_size, charp, S_IRUGO);//允许用户在模块加载后改变磁盘大小
  static unsigned long long simp_blkdev_bytes;
@@ -82,9 +87,9 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
         struct bvec_iter i;
        // void *dsk_mem;
         unsigned long long dsk_offset;
-        dsk_offset = bio->bi_iter.bi_sector * 512;
+        dsk_offset = bio->bi_iter.bi_sector<<SIMP_BLKDEV_SECTORSHIFT;
 
-       if ((bio->bi_iter.bi_sector << 9) + bio->bi_iter.bi_size > simp_blkdev_bytes) {
+       if ((bio->bi_iter.bi_sector << SIMP_BLKDEV_SECTORSHIFT) + bio->bi_iter.bi_size > simp_blkdev_bytes) {
                 printk(KERN_ERR SIMP_BLKDEV_DISKNAME
                         ": bad request: block=%llu, count=%u\n",
                         (unsigned long long)bio->bi_iter.bi_sector, bio->bi_iter.bi_size);
@@ -188,7 +193,7 @@ int getparam(void)
         }
 
         /* make simp_blkdev_bytes fits sector's size */
-        simp_blkdev_bytes = (simp_blkdev_bytes + (1<<9) - 1) & ~((1ULL<<9) - 1);
+        simp_blkdev_bytes = (simp_blkdev_bytes + SIMP_BLKDEV_SECTORSIZE - 1) & SIMP_BLKDEV_SECTORMASK;
 
         return 0;
 }
@@ -218,7 +223,7 @@ static int simp_blkdev_getgeo(struct block_device *bdev,
                 geo->sectors = 63;
         }
 
-        geo->cylinders = simp_blkdev_bytes>>9/geo->heads/geo->sectors;
+        geo->cylinders = simp_blkdev_bytes>>SIMP_BLKDEV_SECTORSHIFT/geo->heads/geo->sectors;
 
         return 0;
 }//第五章增加
@@ -272,7 +277,7 @@ static int __init simp_blkdev_init(void)
         simp_blkdev_disk->first_minor = 0;
         simp_blkdev_disk->fops = &simp_blkdev_fops;
         simp_blkdev_disk->queue = simp_blkdev_queue;
-        set_capacity(simp_blkdev_disk, simp_blkdev_bytes/512);
+        set_capacity(simp_blkdev_disk, simp_blkdev_bytes>>SIMP_BLKDEV_SECTORSHIFT);
         add_disk(simp_blkdev_disk);
 
         return 0;
