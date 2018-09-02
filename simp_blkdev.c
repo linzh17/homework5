@@ -20,13 +20,16 @@ MODULE_DESCRIPTION("For test");
 
 #define SIMP_BLKDEV_DEVICEMAJOR        COMPAQ_SMART2_MAJOR2
 #define SIMP_BLKDEV_DISKNAME        "simp_blkdev"
-#define SIMP_BLKDEV_BYTES        (16*1024*1024)
+//#define simp_blkdev_bytes        (16*1024*1024)
 #define SIMP_BLKDEV_MAXPARTITIONS      (64)
+static char *simp_blkdev_param_size = "16M"; //磁盘大小的默认值指定为16M
+module_param_named(size, simp_blkdev_param_size, charp, S_IRUGO);//允许用户在模块加载后改变磁盘大小
+ static unsigned long long simp_blkdev_bytes;
 
 static struct request_queue *simp_blkdev_queue;
 static struct gendisk *simp_blkdev_disk;
 static int major_num = 0;
-//unsigned char simp_blkdev_data[SIMP_BLKDEV_BYTES]; //第四章修改 第六章去除
+//unsigned char simp_blkdev_data[simp_blkdev_bytes]; //第四章修改 第六章去除
 static struct radix_tree_root simp_blkdev_data;
 
 void free_diskmem(void)
@@ -34,7 +37,7 @@ void free_diskmem(void)
         int i;
         void *p;
 
-        for (i = 0; i < (SIMP_BLKDEV_BYTES + SIMP_BLKDEV_DATASEGSIZE - 1)
+        for (i = 0; i < (simp_blkdev_bytes + SIMP_BLKDEV_DATASEGSIZE - 1)
                 >> SIMP_BLKDEV_DATASEGSHIFT; i++) {
                 p = radix_tree_lookup(&simp_blkdev_data, i);
                 radix_tree_delete(&simp_blkdev_data, i);
@@ -51,7 +54,7 @@ int alloc_diskmem(void)
 
         INIT_RADIX_TREE(&simp_blkdev_data, GFP_KERNEL);
 
-        for (i = 0; i < (SIMP_BLKDEV_BYTES + SIMP_BLKDEV_DATASEGSIZE - 1)
+        for (i = 0; i < (simp_blkdev_bytes + SIMP_BLKDEV_DATASEGSIZE - 1)
                 >> SIMP_BLKDEV_DATASEGSHIFT; i++) {
                 p = (void *)__get_free_pages(GFP_KERNEL,
                         SIMP_BLKDEV_DATASEGORDER);
@@ -81,7 +84,7 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
         unsigned long long dsk_offset;
         dsk_offset = bio->bi_iter.bi_sector * 512;
 
-       if ((bio->bi_iter.bi_sector << 9) + bio->bi_iter.bi_size > SIMP_BLKDEV_BYTES) {
+       if ((bio->bi_iter.bi_sector << 9) + bio->bi_iter.bi_size > simp_blkdev_bytes) {
                 printk(KERN_ERR SIMP_BLKDEV_DISKNAME
                         ": bad request: block=%llu, count=%u\n",
                         (unsigned long long)bio->bi_iter.bi_sector, bio->bi_iter.bi_size);
@@ -151,6 +154,45 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
         return 0;
 }
 
+int getparam(void)
+{
+        char unit;
+        char tailc;
+
+        if (sscanf(simp_blkdev_param_size, "%llu%c%c", &simp_blkdev_bytes,
+                &unit, &tailc) != 2) {
+                return -EINVAL;
+        }
+
+        if (!simp_blkdev_bytes)
+                return -EINVAL;
+
+        switch (unit) {
+        case 'g':
+        case 'G':
+                simp_blkdev_bytes <<= 30;
+                break;
+        case 'm':
+        case 'M':
+                simp_blkdev_bytes <<= 20;
+                break;
+        case 'k':
+        case 'K':
+                simp_blkdev_bytes <<= 10;
+                break;
+        case 'b':
+        case 'B':
+                break;
+        default:
+                return -EINVAL;
+        }
+
+        /* make simp_blkdev_bytes fits sector's size */
+        simp_blkdev_bytes = (simp_blkdev_bytes + (1<<9) - 1) & ~((1ULL<<9) - 1);
+
+        return 0;
+}
+
 static int simp_blkdev_getgeo(struct block_device *bdev,
                 struct hd_geometry *geo)
 {
@@ -161,14 +203,14 @@ static int simp_blkdev_getgeo(struct block_device *bdev,
          * 512M~16G        32        32        1024~32768
          * 16G~...        255        63        2088~...
          */
-        if (SIMP_BLKDEV_BYTES < 16 * 1024 * 1024) {
+        if (simp_blkdev_bytes < 16 * 1024 * 1024) {
                 geo->heads = 1;
                 geo->sectors = 1;
 
-        } else if (SIMP_BLKDEV_BYTES < 512 * 1024 * 1024) {
+        } else if (simp_blkdev_bytes < 512 * 1024 * 1024) {
                 geo->heads = 1;
                 geo->sectors = 32;
-        } else if (SIMP_BLKDEV_BYTES < 16ULL * 1024 * 1024 * 1024) {
+        } else if (simp_blkdev_bytes < 16ULL * 1024 * 1024 * 1024) {
                 geo->heads = 32;
                 geo->sectors = 32;
         } else {
@@ -176,7 +218,7 @@ static int simp_blkdev_getgeo(struct block_device *bdev,
                 geo->sectors = 63;
         }
 
-        geo->cylinders = SIMP_BLKDEV_BYTES>>9/geo->heads/geo->sectors;
+        geo->cylinders = simp_blkdev_bytes>>9/geo->heads/geo->sectors;
 
         return 0;
 }//第五章增加
@@ -215,6 +257,10 @@ static int __init simp_blkdev_init(void)
         if (IS_ERR_VALUE(ret))
                 goto err_alloc_diskmem; // 第六章增加
 
+        ret = getparam();
+        if (IS_ERR_VALUE(ret))
+                goto err_getparam;        
+
         /*major_num = register_blkdev(major_num, "sbd");
  *                 if (major_num < 0) {
  *                                         printk(KERN_WARNING "sbd: unable to get major number\n");
@@ -226,11 +272,13 @@ static int __init simp_blkdev_init(void)
         simp_blkdev_disk->first_minor = 0;
         simp_blkdev_disk->fops = &simp_blkdev_fops;
         simp_blkdev_disk->queue = simp_blkdev_queue;
-        set_capacity(simp_blkdev_disk, SIMP_BLKDEV_BYTES/512);
+        set_capacity(simp_blkdev_disk, simp_blkdev_bytes/512);
         add_disk(simp_blkdev_disk);
 
         return 0;
 
+ err_getparam:
+        return ret;
 err_alloc_diskmem:
         put_disk(simp_blkdev_disk); // 第六章增加
 err_alloc_disk:
