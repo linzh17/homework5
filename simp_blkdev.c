@@ -64,7 +64,7 @@ int alloc_diskmem(void)
                 >> SIMP_BLKDEV_DATASEGSHIFT; i++) {
                 /*p = (void *)__get_free_pages(GFP_KERNEL,
                         SIMP_BLKDEV_DATASEGORDER);*/
-                page = alloc_pages(GFP_KERNEL | __GFP_ZERO, SIMP_BLKDEV_DATASEGORDER);//    申请高端内存
+                page = alloc_pages(GFP_KERNEL | __GFP_ZERO | __GFP_HIGHMEM,SIMP_BLKDEV_DATASEGORDER);//申请高端内存
                 if (!page) {
                         ret = -ENOMEM;
                         goto err_alloc;
@@ -85,20 +85,37 @@ err_alloc:
 
 static int simp_blkdev_trans_oneseg(struct page *start_page, unsigned long offset, void *buf, unsigned int len, int dir)
 {
+        unsigned int done_cnt;
+        struct page *this_page;
+        unsigned int this_off;
+        unsigned int this_cnt;
         void *dsk_mem;
 
-        dsk_mem = page_address(start_page);
-        if (!dsk_mem) {
-                printk(KERN_ERR SIMP_BLKDEV_DISKNAME
-                        ": get page's address failed: %p\n", start_page);
-                return -ENOMEM;
-        }
-        dsk_mem += offset;
+        done_cnt = 0;
+        while (done_cnt < len) {
+                /* iterate each page */
+                this_page = start_page + ((offset + done_cnt) >> PAGE_SHIFT);
+                this_off = (offset + done_cnt) & ~PAGE_MASK;
+                this_cnt = min(len - done_cnt, (unsigned int)PAGE_SIZE
+                        - this_off);
 
-        if (!dir)
-                memcpy(buf, dsk_mem, len);
-        else
-                memcpy(dsk_mem, buf, len);
+                dsk_mem = kmap(this_page);
+                if (!dsk_mem) {
+                        printk(KERN_ERR SIMP_BLKDEV_DISKNAME
+                                ": map device page failed: %p\n", this_page);
+                        return -ENOMEM;
+                }
+                dsk_mem += this_off;
+
+                if (!dir)
+                        memcpy(buf + done_cnt, dsk_mem, this_cnt);
+                else
+                        memcpy(dsk_mem, buf + done_cnt, this_cnt);
+
+                kunmap(this_page);
+
+                done_cnt += this_cnt;
+        }
 
         return 0;
 }//page指针对应的内存，然后根据给定的数据方向执行指定长度的数据传输。
@@ -192,7 +209,7 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
 
                 kunmap(bvec.bv_page);
 
-                dsk_offset += bvec->bv_len;
+                dsk_offset += bvec.bv_len;
         }
         bio_endio(bio);
         return 0;
