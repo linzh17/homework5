@@ -40,14 +40,14 @@ static struct radix_tree_root simp_blkdev_data;
 void free_diskmem(void)
 {
         int i;
-        void *p;
-
+        //void *p;
+         struct page *page;
         for (i = 0; i < (simp_blkdev_bytes + SIMP_BLKDEV_DATASEGSIZE - 1)
                 >> SIMP_BLKDEV_DATASEGSHIFT; i++) {
-                p = radix_tree_lookup(&simp_blkdev_data, i);
+                page = radix_tree_lookup(&simp_blkdev_data, i);
                 radix_tree_delete(&simp_blkdev_data, i);
                 /* free NULL is safe */
-                free_pages((unsigned long)p, SIMP_BLKDEV_DATASEGORDER);
+                __free_pages(page, SIMP_BLKDEV_DATASEGORDER);
         }
 }
 
@@ -55,27 +55,28 @@ int alloc_diskmem(void)
 {
         int ret;
         int i;
-        void *p;
-
+        //void *p;
+        struct page*page;
         INIT_RADIX_TREE(&simp_blkdev_data, GFP_KERNEL);
 
         for (i = 0; i < (simp_blkdev_bytes + SIMP_BLKDEV_DATASEGSIZE - 1)
                 >> SIMP_BLKDEV_DATASEGSHIFT; i++) {
-                p = (void *)__get_free_pages(GFP_KERNEL,
-                        SIMP_BLKDEV_DATASEGORDER);
-                if (!p) {
+                /*p = (void *)__get_free_pages(GFP_KERNEL,
+                        SIMP_BLKDEV_DATASEGORDER);*/
+                page = alloc_pages(GFP_KERNEL | __GFP_ZERO, SIMP_BLKDEV_DATASEGORDER);//    申请高端内存
+                if (!page) {
                         ret = -ENOMEM;
                         goto err_alloc;
                 }
 
-                ret = radix_tree_insert(&simp_blkdev_data, i, p);
+                ret = radix_tree_insert(&simp_blkdev_data, i, page);
                 if (IS_ERR_VALUE(ret))
                         goto err_radix_tree_insert;
         }
         return 0;
 
 err_radix_tree_insert:
-        free_pages((unsigned long)p, SIMP_BLKDEV_DATASEGORDER);
+         __free_pages(page, SIMP_BLKDEV_DATASEGORDER);
 err_alloc:
         free_diskmem();
         return ret;
@@ -107,6 +108,7 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
                 unsigned int count_done, count_current;
                 void *iovec_mem;
                 void *dsk_mem;
+                struct page *dsk_page;
 
                 iovec_mem = kmap(bvec.bv_page) + bvec.bv_offset;
 
@@ -117,10 +119,10 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
                                 - ((dsk_offset + count_done) &
                                 ~SIMP_BLKDEV_DATASEGMASK)));
 
-                        dsk_mem = radix_tree_lookup(&simp_blkdev_data,
+                        dsk_page = radix_tree_lookup(&simp_blkdev_data,
                                 (dsk_offset + count_done)
                                 >> SIMP_BLKDEV_DATASEGSHIFT);
-                        if (!dsk_mem) {
+                        if (!dsk_page) {
                                 printk(KERN_ERR SIMP_BLKDEV_DISKNAME
                                         ": search memory failed: %llu\n",
                                         (dsk_offset + count_done)
@@ -129,6 +131,17 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
                                 bio_endio(bio);
                                 return 0;
                         }
+
+                           dsk_mem = page_address(dsk_page);
+                        if (!dsk_mem) {
+                                printk(KERN_ERR SIMP_BLKDEV_DISKNAME
+                                        ": get page's address failed: %p\n",
+                                        dsk_page);
+                                kunmap(bvec.bv_page);
+
+                                bio_endio(bio);
+                        }
+
                          dsk_mem += (dsk_offset + count_done)
                                 & ~SIMP_BLKDEV_DATASEGMASK;
                 switch (bio_data_dir(bio)) {
