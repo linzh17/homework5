@@ -40,16 +40,25 @@ static struct radix_tree_root simp_blkdev_data;
 
 void free_diskmem(void)
 {
+        unsigned long long next_seg;
+        struct page *seglist[64];
+        int listcnt;
         int i;
         //void *p;
-         struct page *page;
-        for (i = 0; i < (simp_blkdev_bytes + SIMP_BLKDEV_DATASEGSIZE - 1)
-                >> SIMP_BLKDEV_DATASEGSHIFT; i++) {
-                page = radix_tree_lookup(&simp_blkdev_data, i);
-                radix_tree_delete(&simp_blkdev_data, i);
-                /* free NULL is safe */
-                __free_pages(page, SIMP_BLKDEV_DATASEGORDER);
-        }
+        // struct page *page;
+        next_seg = 0;
+        do {
+                listcnt = radix_tree_gang_lookup(&simp_blkdev_data,
+                        (void **)seglist, next_seg, ARRAY_SIZE(seglist));
+
+                for (i = 0; i < listcnt; i++) {
+                        next_seg = seglist[i]->index;
+                        radix_tree_delete(&simp_blkdev_data, next_seg);
+                        __free_pages(seglist[i], SIMP_BLKDEV_DATASEGORDER);
+                }
+
+                next_seg++;
+        } while (listcnt == ARRAY_SIZE(seglist));
 }
 
 int alloc_diskmem(void)
@@ -70,6 +79,8 @@ int alloc_diskmem(void)
                         goto err_alloc;
                 }
 
+                page->index = i;
+                
                 ret = radix_tree_insert(&simp_blkdev_data, i, page);
                 if (IS_ERR_VALUE(ret))
                         goto err_radix_tree_insert;
