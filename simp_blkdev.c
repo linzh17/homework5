@@ -61,38 +61,9 @@ void free_diskmem(void)
         } while (listcnt == ARRAY_SIZE(seglist));
 }
 
-int alloc_diskmem(void)
-{
-        int ret;
-        int i;
-        //void *p;
-        struct page*page;
-        INIT_RADIX_TREE(&simp_blkdev_data, GFP_KERNEL);
-
-        for (i = 0; i < (simp_blkdev_bytes + SIMP_BLKDEV_DATASEGSIZE - 1)
-                >> SIMP_BLKDEV_DATASEGSHIFT; i++) {
-                /*p = (void *)__get_free_pages(GFP_KERNEL,
-                        SIMP_BLKDEV_DATASEGORDER);*/
-                page = alloc_pages(GFP_KERNEL | __GFP_ZERO | __GFP_HIGHMEM,SIMP_BLKDEV_DATASEGORDER);//申请高端内存
-                if (!page) {
-                        ret = -ENOMEM;
-                        goto err_alloc;
-                }
-
-                page->index = i;
-                
-                ret = radix_tree_insert(&simp_blkdev_data, i, page);
-                if (IS_ERR_VALUE(ret))
-                        goto err_radix_tree_insert;
-        }
-        return 0;
-
-err_radix_tree_insert:
-         __free_pages(page, SIMP_BLKDEV_DATASEGORDER);
-err_alloc:
-        free_diskmem();
-        return ret;
-}
+/*int alloc_diskmem(void)
+{........
+}*/ //十四章删除
 
 static int simp_blkdev_trans_oneseg(struct page *start_page, unsigned long offset, void *buf, unsigned int len, int dir)
 {
@@ -147,18 +118,39 @@ static int simp_blkdev_trans(unsigned long long dsk_offset, void *buf,unsigned i
                 this_first_page = radix_tree_lookup(&simp_blkdev_data,(dsk_offset + done_cnt) >> SIMP_BLKDEV_DATASEGSHIFT);
 
                 if (!this_first_page) {
-                        printk(KERN_ERR SIMP_BLKDEV_DISKNAME
-                                ": search memory failed: %llu\n",
-                                (dsk_offset + done_cnt)
-                                >> SIMP_BLKDEV_DATASEGSHIFT);
-                        return -ENOENT;
-                }
+                        if (!dir) {
+                                memset(buf + done_cnt, 0, this_cnt);
+                                goto trans_done;
+                        }
 
-                if (IS_ERR_VALUE(simp_blkdev_trans_oneseg(this_first_page,this_off, buf + done_cnt, this_cnt, dir)))
+                        /* prepare new memory segment for write */
+                        this_first_page = alloc_pages(
+                                GFP_KERNEL | __GFP_ZERO | __GFP_HIGHMEM,
+                                SIMP_BLKDEV_DATASEGORDER);
+                        if (!this_first_page) {
+                                printk(KERN_ERR SIMP_BLKDEV_DISKNAME
+                                        ": allocate page failed\n");
+                                return -ENOMEM;
+                        }
+
+                        this_first_page->index = (dsk_offset + done_cnt) >> SIMP_BLKDEV_DATASEGSHIFT;
+
+                 if (IS_ERR_VALUE(radix_tree_insert(&simp_blkdev_data,this_first_page->index, this_first_page))) {
+                printk(KERN_ERR SIMP_BLKDEV_DISKNAME
+                        ": insert page to radix_tree failed"
+                        " seg=%lu\n", this_first_page->index);
+                __free_pages(this_first_page,SIMP_BLKDEV_DATASEGORDER);
+                return -EIO;
+                }
+        }
+
+        if (IS_ERR_VALUE(simp_blkdev_trans_oneseg(this_first_page,this_off, buf + done_cnt, this_cnt, dir)))
                         return -EIO;
 
+trans_done:
                 done_cnt += this_cnt;
         }
+
 
         return 0;
 }//分割请求数据搞定了数据跨越多个块设备数据块的问题，并且顺便把块设备数据块的第一个page给找了出来
@@ -328,9 +320,10 @@ static int __init simp_blkdev_init(void)
                 goto err_alloc_disk;
         }
 
-         ret = alloc_diskmem();
-        if (IS_ERR_VALUE(ret))
-                goto err_alloc_diskmem; // 第六章增加
+         INIT_RADIX_TREE(&simp_blkdev_data, GFP_KERNEL);//十四章
+        //ret = alloc_diskmem();
+        //if (IS_ERR_VALUE(ret))
+        //        goto err_alloc_diskmem; // 第六章增加 十四章删除
 
         ret = getparam();
         if (IS_ERR_VALUE(ret))
@@ -354,8 +347,8 @@ static int __init simp_blkdev_init(void)
 
  err_getparam:
         return ret;
-err_alloc_diskmem:
-        put_disk(simp_blkdev_disk); // 第六章增加
+//err_alloc_diskmem:
+//        put_disk(simp_blkdev_disk); // 第六章增加  十四章删除
 err_alloc_disk:
         blk_cleanup_queue(simp_blkdev_queue);
 err_alloc_queue:
