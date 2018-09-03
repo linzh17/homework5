@@ -30,13 +30,15 @@ MODULE_DESCRIPTION("For test");
 
 static char *simp_blkdev_param_size = "16M"; //磁盘大小的默认值指定为16M
 module_param_named(size, simp_blkdev_param_size, charp, S_IRUGO);//允许用户在模块加载后改变磁盘大小
- static unsigned long long simp_blkdev_bytes;
+static unsigned long long simp_blkdev_bytes;
 
 static struct request_queue *simp_blkdev_queue;
 static struct gendisk *simp_blkdev_disk;
 static int major_num = 0;
 //unsigned char simp_blkdev_data[simp_blkdev_bytes]; //第四章修改 第六章去除
 static struct radix_tree_root simp_blkdev_data;
+DEFINE_MUTEX(simp_blkdev_datalock); /* protects the disk data op */ //锁simp_blkdev_data
+
 
 void free_diskmem(void)
 {
@@ -114,7 +116,7 @@ static int simp_blkdev_trans(unsigned long long dsk_offset, void *buf,unsigned i
                 /* iterate each data segment */
                 this_off = (dsk_offset + done_cnt) & ~SIMP_BLKDEV_DATASEGMASK;
                 this_cnt = min(len - done_cnt,(unsigned int)SIMP_BLKDEV_DATASEGSIZE - this_off);
-
+                mutex_lock(&simp_blkdev_datalock);
                 this_first_page = radix_tree_lookup(&simp_blkdev_data,(dsk_offset + done_cnt) >> SIMP_BLKDEV_DATASEGSHIFT);
 
                 if (!this_first_page) {
@@ -128,8 +130,8 @@ static int simp_blkdev_trans(unsigned long long dsk_offset, void *buf,unsigned i
                                 GFP_KERNEL | __GFP_ZERO | __GFP_HIGHMEM,
                                 SIMP_BLKDEV_DATASEGORDER);
                         if (!this_first_page) {
-                                printk(KERN_ERR SIMP_BLKDEV_DISKNAME
-                                        ": allocate page failed\n");
+                                printk(KERN_ERR SIMP_BLKDEV_DISKNAME": allocate page failed\n");
+                                        mutex_unlock(&simp_blkdev_datalock);
                                 return -ENOMEM;
                         }
 
@@ -140,15 +142,20 @@ static int simp_blkdev_trans(unsigned long long dsk_offset, void *buf,unsigned i
                         ": insert page to radix_tree failed"
                         " seg=%lu\n", this_first_page->index);
                 __free_pages(this_first_page,SIMP_BLKDEV_DATASEGORDER);
+                mutex_unlock(&simp_blkdev_datalock);
                 return -EIO;
                 }
         }
 
-        if (IS_ERR_VALUE(simp_blkdev_trans_oneseg(this_first_page,this_off, buf + done_cnt, this_cnt, dir)))
+        if (IS_ERR_VALUE(simp_blkdev_trans_oneseg(this_first_page,this_off, buf + done_cnt, this_cnt, dir))){
+                        
+                        mutex_unlock(&simp_blkdev_datalock);
                         return -EIO;
+        }
 
 trans_done:
-                done_cnt += this_cnt;
+        mutex_unlock(&simp_blkdev_datalock);
+        done_cnt += this_cnt;               
         }
 
 
