@@ -83,25 +83,92 @@ err_alloc:
         return ret;
 }
 
-static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio *bio)
+static int simp_blkdev_trans_oneseg(struct page *start_page, unsigned long offset, void *buf, unsigned int len, int dir)
 {
+        void *dsk_mem;
+
+        dsk_mem = page_address(start_page);
+        if (!dsk_mem) {
+                printk(KERN_ERR SIMP_BLKDEV_DISKNAME
+                        ": get page's address failed: %p\n", start_page);
+                return -ENOMEM;
+        }
+        dsk_mem += offset;
+
+        if (!dir)
+                memcpy(buf, dsk_mem, len);
+        else
+                memcpy(dsk_mem, buf, len);
+
+        return 0;
+}//page指针对应的内存，然后根据给定的数据方向执行指定长度的数据传输。
+
+static int simp_blkdev_trans(unsigned long long dsk_offset, void *buf,unsigned int len, int dir)//处理块设备与一段连续内存之间数据传输
+{
+        unsigned int done_cnt;
+        struct page *this_first_page;
+        unsigned int this_off;
+        unsigned int this_cnt;
+
+        done_cnt = 0;
+        while (done_cnt < len) {
+                /* iterate each data segment */
+                this_off = (dsk_offset + done_cnt) & ~SIMP_BLKDEV_DATASEGMASK;
+                this_cnt = min(len - done_cnt,(unsigned int)SIMP_BLKDEV_DATASEGSIZE - this_off);
+
+                this_first_page = radix_tree_lookup(&simp_blkdev_data,(dsk_offset + done_cnt) >> SIMP_BLKDEV_DATASEGSHIFT);
+
+                if (!this_first_page) {
+                        printk(KERN_ERR SIMP_BLKDEV_DISKNAME
+                                ": search memory failed: %llu\n",
+                                (dsk_offset + done_cnt)
+                                >> SIMP_BLKDEV_DATASEGSHIFT);
+                        return -ENOENT;
+                }
+
+                if (IS_ERR_VALUE(simp_blkdev_trans_oneseg(this_first_page,this_off, buf + done_cnt, this_cnt, dir)))
+                        return -EIO;
+
+                done_cnt += this_cnt;
+        }
+
+        return 0;
+}//分割请求数据搞定了数据跨越多个块设备数据块的问题，并且顺便把块设备数据块的第一个page给找了出来
+
+
+
+static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio *bio)//负责决定数据传输方向、检查bio请求是否合法、遍历bio中的每个bvec、映射bvec中的内存页，
+{
+        int dir;
         struct bio_vec bvec;
         struct bvec_iter i;
        // void *dsk_mem;
         unsigned long long dsk_offset;
-        dsk_offset = bio->bi_iter.bi_sector<<SIMP_BLKDEV_SECTORSHIFT;
+
+        switch (bio_data_dir(bio)) {
+                case READ:
+                //case READA:
+                        dir = 0;
+                        break;
+                case WRITE:
+                        dir = 1;
+                        break;
+                default:
+                        printk(KERN_ERR SIMP_BLKDEV_DISKNAME
+                                ": unknown value of bio_data_dir: %lu\n", bio_data_dir(bio));
+                        goto bio_err;
+                }
+
+        
 
        if ((bio->bi_iter.bi_sector << SIMP_BLKDEV_SECTORSHIFT) + bio->bi_iter.bi_size > simp_blkdev_bytes) {
                 printk(KERN_ERR SIMP_BLKDEV_DISKNAME
                         ": bad request: block=%llu, count=%u\n",
                         (unsigned long long)bio->bi_iter.bi_sector, bio->bi_iter.bi_size);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(2, 6, 24)
-                bio_endio(bio, 0, -EIO);
-#else
-                bio_endio(bio);
-#endif
-                return 0;
+                goto bio_err;
         } 
+
+        dsk_offset = bio->bi_iter.bi_sector<<SIMP_BLKDEV_SECTORSHIFT;
 
         /*dsk_mem = simp_blkdev_data + (bio->bi_iter.bi_sector << 9); */
 
@@ -110,67 +177,28 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
                 void *iovec_mem;
                 void *dsk_mem;
                 struct page *dsk_page;
+                
 
                 iovec_mem = kmap(bvec.bv_page) + bvec.bv_offset;
-
-                count_done = 0;
-                while (count_done < bvec.bv_len) {
-                        count_current = min(bvec.bv_len - count_done,
-                                (unsigned int)(SIMP_BLKDEV_DATASEGSIZE
-                                - ((dsk_offset + count_done) &
-                                ~SIMP_BLKDEV_DATASEGMASK)));
-
-                        dsk_page = radix_tree_lookup(&simp_blkdev_data,
-                                (dsk_offset + count_done)
-                                >> SIMP_BLKDEV_DATASEGSHIFT);
-                        if (!dsk_page) {
-                                printk(KERN_ERR SIMP_BLKDEV_DISKNAME
-                                        ": search memory failed: %llu\n",
-                                        (dsk_offset + count_done)
-                                        >> SIMP_BLKDEV_DATASEGSHIFT);
-                                kunmap(bvec.bv_page);
-                                bio_endio(bio);
-                                return 0;
-                        }
-
-                           dsk_mem = page_address(dsk_page);
-                        if (!dsk_mem) {
-                                printk(KERN_ERR SIMP_BLKDEV_DISKNAME
-                                        ": get page's address failed: %p\n",
-                                        dsk_page);
-                                kunmap(bvec.bv_page);
-
-                                bio_endio(bio);
-                        }
-
-                         dsk_mem += (dsk_offset + count_done)
-                                & ~SIMP_BLKDEV_DATASEGMASK;
-                switch (bio_data_dir(bio)) {
-                        case READ:
-                        //case READA:
-                                memcpy(iovec_mem + count_done, dsk_mem, count_current);
-                                break;
-                        case WRITE:
-                                memcpy(dsk_mem, iovec_mem + count_done, count_current);
-                                break;
-                        default:
-                                printk(KERN_ERR SIMP_BLKDEV_DISKNAME
-                                        ": unknown value of bio_rw: %lu\n",
-                                        bio_data_dir(bio));
-                                kunmap(bvec.bv_page);
-                                bio_endio(bio);
-                                return 0;                                
-                        }
-                 count_done += count_current;
+                 if (!iovec_mem) {
+                        printk(KERN_ERR SIMP_BLKDEV_DISKNAME
+                                ": map iovec page failed: %p\n", bvec.bv_page);
+                        goto bio_err;
                 }
 
+                 if (IS_ERR_VALUE(simp_blkdev_trans(dsk_offset, iovec_mem,
+                        bvec.bv_len, dir)))
+                        goto bio_err;
+
                 kunmap(bvec.bv_page);
-                dsk_offset += bvec.bv_len;
-            }    
 
-
+                dsk_offset += bvec->bv_len;
+        }
         bio_endio(bio);
         return 0;
+bio_err:
+bio_endio(bio);
+return 0;        
 }
 
 int getparam(void)
