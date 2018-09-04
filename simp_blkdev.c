@@ -25,16 +25,17 @@ MODULE_DESCRIPTION("For test");
 #define SIMP_BLKDEV_MAXPARTITIONS      (64)
 
 #define SIMP_BLKDEV_SECTORSHIFT        (9)
-#define SIMP_BLKDEV_SECTORSIZE        (1ULL<<SIMP_BLKDEV_SECTORSHIFT)//左移9
-#define SIMP_BLKDEV_SECTORMASK        (~(SIMP_BLKDEV_SECTORSIZE-1))//~((1ULL<<9) - 1)
+#define SIMP_BLKDEV_SECTORSIZE        (1ULL<<SIMP_BLKDEV_SECTORSHIFT)
+#define SIMP_BLKDEV_SECTORMASK        (~(SIMP_BLKDEV_SECTORSIZE-1))
 
 static char *simp_blkdev_param_size = "16M"; //磁盘大小的默认值指定为16M
 module_param_named(size, simp_blkdev_param_size, charp, S_IRUGO);//允许用户在模块加载后改变磁盘大小
+
 static unsigned long long simp_blkdev_bytes;
 
 static struct request_queue *simp_blkdev_queue;
 static struct gendisk *simp_blkdev_disk;
-static int major_num = 0;
+//static int major_num = 0;
 //unsigned char simp_blkdev_data[simp_blkdev_bytes]; //第四章修改 第六章去除
 static struct radix_tree_root simp_blkdev_data;
 DEFINE_MUTEX(simp_blkdev_datalock); /* protects the disk data op */ //锁simp_blkdev_data
@@ -51,7 +52,7 @@ void free_diskmem(void)
         next_seg = 0;
         do {
                 listcnt = radix_tree_gang_lookup(&simp_blkdev_data,
-                        (void **)seglist, next_seg, ARRAY_SIZE(seglist));
+                        (void **)seglist, next_seg, ARRAY_SIZE(seglist));//获得了一组需要释放的指针
 
                 for (i = 0; i < listcnt; i++) {
                         next_seg = seglist[i]->index;
@@ -106,7 +107,7 @@ static int simp_blkdev_trans_oneseg(struct page *start_page, unsigned long offse
 
 static int simp_blkdev_trans(unsigned long long dsk_offset, void *buf,unsigned int len, int dir)//处理块设备与一段连续内存之间数据传输
 {
-        unsigned int done_cnt;
+        unsigned int done_cnt;//记录前几次中已经完成的数据量
         struct page *this_first_page;
         unsigned int this_off;
         unsigned int this_cnt;
@@ -114,9 +115,10 @@ static int simp_blkdev_trans(unsigned long long dsk_offset, void *buf,unsigned i
         done_cnt = 0;
         while (done_cnt < len) {
                 /* iterate each data segment */
-                this_off = (dsk_offset + done_cnt) & ~SIMP_BLKDEV_DATASEGMASK;
-                this_cnt = min(len - done_cnt,(unsigned int)SIMP_BLKDEV_DATASEGSIZE - this_off);
-                mutex_lock(&simp_blkdev_datalock);
+                this_off = (dsk_offset + done_cnt) & ~SIMP_BLKDEV_DATASEGMASK;//块设备偏移所在位置到页头
+                this_cnt = min(len - done_cnt,(unsigned int)SIMP_BLKDEV_DATASEGSIZE - this_off);//确定这一次传送的数据量
+                mutex_lock(&simp_blkdev_datalock);//锁simp_blkdev_data
+                //找出块设备数据块的第一个page 查找基数中的一个内存块
                 this_first_page = radix_tree_lookup(&simp_blkdev_data,(dsk_offset + done_cnt) >> SIMP_BLKDEV_DATASEGSHIFT);
 
                 if (!this_first_page) {
@@ -134,7 +136,7 @@ static int simp_blkdev_trans(unsigned long long dsk_offset, void *buf,unsigned i
                                         mutex_unlock(&simp_blkdev_datalock);
                                 return -ENOMEM;
                         }
-
+                        //基树的索引存入page.index
                         this_first_page->index = (dsk_offset + done_cnt) >> SIMP_BLKDEV_DATASEGSHIFT;
 
                  if (IS_ERR_VALUE(radix_tree_insert(&simp_blkdev_data,this_first_page->index, this_first_page))) {
@@ -142,7 +144,7 @@ static int simp_blkdev_trans(unsigned long long dsk_offset, void *buf,unsigned i
                         ": insert page to radix_tree failed"
                         " seg=%lu\n", this_first_page->index);
                 __free_pages(this_first_page,SIMP_BLKDEV_DATASEGORDER);
-                mutex_unlock(&simp_blkdev_datalock);
+                mutex_unlock(&simp_blkdev_datalock);//把锁还回去
                 return -EIO;
                 }
         }
@@ -171,7 +173,9 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
         struct bvec_iter i;
        // void *dsk_mem;
         unsigned long long dsk_offset;
+        void *iovec_mem;
 
+        //数据传输方向
         switch (bio_data_dir(bio)) {
                 case READ:
                 //case READA:
@@ -187,7 +191,7 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
                 }
 
         
-
+        //检查bio请求是否合法
        if ((bio->bi_iter.bi_sector << SIMP_BLKDEV_SECTORSHIFT) + bio->bi_iter.bi_size > simp_blkdev_bytes) {
                 printk(KERN_ERR SIMP_BLKDEV_DISKNAME
                         ": bad request: block=%llu, count=%u\n",
@@ -200,26 +204,26 @@ static unsigned int simp_blkdev_make_request(struct request_queue *q, struct bio
         /*dsk_mem = simp_blkdev_data + (bio->bi_iter.bi_sector << 9); */
 
         bio_for_each_segment(bvec, bio, i) {
-                unsigned int count_done, count_current;
-                void *iovec_mem;
-                void *dsk_mem;
-                struct page *dsk_page;
+               // unsigned int count_done, count_current;
+                //void *iovec_mem;
+                //void *dsk_mem;
+                //struct page *dsk_page;
                 
 
-                iovec_mem = kmap(bvec.bv_page) + bvec.bv_offset;
+                iovec_mem = kmap(bvec.bv_page) + bvec.bv_offset;//映射访问内存页面
                  if (!iovec_mem) {
                         printk(KERN_ERR SIMP_BLKDEV_DISKNAME
                                 ": map iovec page failed: %p\n", bvec.bv_page);
                         goto bio_err;
                 }
-
+                //数据与iovec_mem地址之间的传送
                  if (IS_ERR_VALUE(simp_blkdev_trans(dsk_offset, iovec_mem,
                         bvec.bv_len, dir)))
                         goto bio_err;
 
-                kunmap(bvec.bv_page);
+                kunmap(bvec.bv_page);//把映射的区域还回去
 
-                dsk_offset += bvec.bv_len;
+                dsk_offset += bvec.bv_len;//每处理完成一个bio_vec时，更新dsk_offset值
         }
         bio_endio(bio);
         return 0;
@@ -228,7 +232,7 @@ bio_endio(bio);
 return 0;        
 }
 
-int getparam(void)
+int getparam(void)//对模块参数进行解析，设置simp_blkdev_bytes变量的值
 {
         char unit;
         char tailc;
@@ -241,6 +245,7 @@ int getparam(void)
         if (!simp_blkdev_bytes)
                 return -EINVAL;
 
+        //用字符串来指定大小
         switch (unit) {
         case 'g':
         case 'G':
@@ -268,7 +273,7 @@ int getparam(void)
 }
 
 static int simp_blkdev_getgeo(struct block_device *bdev,
-                struct hd_geometry *geo)
+                struct hd_geometry *geo)//获得块设备物理结构 磁道的上限设置成32768
 {
         /*
          * capacity        heads        sectors        cylinders
@@ -278,8 +283,8 @@ static int simp_blkdev_getgeo(struct block_device *bdev,
          * 16G~...        255        63        2088~...
          */
         if (simp_blkdev_bytes < 16 * 1024 * 1024) {
-                geo->heads = 1;
-                geo->sectors = 1;
+                geo->heads = 1;   //磁头数
+                geo->sectors = 1;//每磁道扇区数
 
         } else if (simp_blkdev_bytes < 512 * 1024 * 1024) {
                 geo->heads = 1;
@@ -292,7 +297,7 @@ static int simp_blkdev_getgeo(struct block_device *bdev,
                 geo->sectors = 63;
         }
 
-        geo->cylinders = simp_blkdev_bytes>>SIMP_BLKDEV_SECTORSHIFT/geo->heads/geo->sectors;
+        geo->cylinders = simp_blkdev_bytes>>SIMP_BLKDEV_SECTORSHIFT/geo->heads/geo->sectors;//计算磁道数
 
         return 0;
 }//第五章增加
@@ -315,19 +320,19 @@ static int __init simp_blkdev_init(void)
 {
         int ret;
 
-        simp_blkdev_queue = blk_alloc_queue(GFP_KERNEL);
+        simp_blkdev_queue = blk_alloc_queue(GFP_KERNEL);//获取request_queue
         if (!simp_blkdev_queue) {
                 ret = -ENOMEM;
                 goto err_alloc_queue;
         }
-		blk_queue_make_request(simp_blkdev_queue, simp_blkdev_make_request);
-        simp_blkdev_disk = alloc_disk(SIMP_BLKDEV_MAXPARTITIONS); 
+	blk_queue_make_request(simp_blkdev_queue, simp_blkdev_make_request);
+        simp_blkdev_disk = alloc_disk(SIMP_BLKDEV_MAXPARTITIONS); //申请添加的设备资源
         if (!simp_blkdev_disk) {
                 ret = -ENOMEM;
                 goto err_alloc_disk;
         }
 
-         INIT_RADIX_TREE(&simp_blkdev_data, GFP_KERNEL);//十四章
+         INIT_RADIX_TREE(&simp_blkdev_data, GFP_KERNEL);//十四章  初始化一个基树的结构
         //ret = alloc_diskmem();
         //if (IS_ERR_VALUE(ret))
         //        goto err_alloc_diskmem; // 第六章增加 十四章删除
@@ -343,10 +348,10 @@ static int __init simp_blkdev_init(void)
  *                                                                                 }*/
 
         strcpy(simp_blkdev_disk->disk_name, SIMP_BLKDEV_DISKNAME);
-        simp_blkdev_disk->major = SIMP_BLKDEV_DEVICEMAJOR;
+        simp_blkdev_disk->major = SIMP_BLKDEV_DEVICEMAJOR;//每个设备需要对应的主、从驱动号
         simp_blkdev_disk->first_minor = 0;
         simp_blkdev_disk->fops = &simp_blkdev_fops;
-        simp_blkdev_disk->queue = simp_blkdev_queue;
+        simp_blkdev_disk->queue = simp_blkdev_queue;//请求队列
         set_capacity(simp_blkdev_disk, simp_blkdev_bytes>>SIMP_BLKDEV_SECTORSHIFT);
         add_disk(simp_blkdev_disk);
 
